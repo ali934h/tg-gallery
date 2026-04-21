@@ -1,12 +1,11 @@
 /**
  * Application Entry Point
- * HTTPS server in production (webhook) or HTTP with polling in development
- * Serves downloaded ZIP files as static files
+ * Production: HTTP on internal port (nginx handles SSL as reverse proxy)
+ * Development: HTTP with polling
  */
 
 require('dotenv').config();
 const express = require('express');
-const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -15,15 +14,12 @@ const Logger = require('./utils/logger');
 const FileManager = require('./utils/fileManager');
 
 // Configuration
-const PORT = process.env.PORT || 3000;
-const HTTPS_PORT = process.env.HTTPS_PORT || 443;
+const PORT = parseInt(process.env.PORT) || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const WEBHOOK_DOMAIN = process.env.WEBHOOK_DOMAIN;
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || '/webhook';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const DOWNLOADS_DIR = process.env.DOWNLOADS_DIR || path.join(process.cwd(), 'downloads');
-const SSL_CERT = process.env.SSL_CERT;
-const SSL_KEY = process.env.SSL_KEY;
 
 // Validate required environment variables
 if (!BOT_TOKEN) {
@@ -31,19 +27,9 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-if (NODE_ENV === 'production') {
-  if (!WEBHOOK_DOMAIN) {
-    Logger.error('WEBHOOK_DOMAIN is required in production mode');
-    process.exit(1);
-  }
-  if (!SSL_CERT || !SSL_KEY) {
-    Logger.error('SSL_CERT and SSL_KEY paths are required in production mode');
-    process.exit(1);
-  }
-  if (!fs.existsSync(SSL_CERT) || !fs.existsSync(SSL_KEY)) {
-    Logger.error('SSL certificate or key file not found', { cert: SSL_CERT, key: SSL_KEY });
-    process.exit(1);
-  }
+if (NODE_ENV === 'production' && !WEBHOOK_DOMAIN) {
+  Logger.error('WEBHOOK_DOMAIN is required in production mode');
+  process.exit(1);
 }
 
 // Create Express app
@@ -75,7 +61,7 @@ app.get('/', (req, res) => {
 // Initialize bot
 const bot = new TelegramBot(BOT_TOKEN);
 
-// Cleanup scheduler: only remove old TEMP dirs every hour
+// Cleanup scheduler: remove old temp dirs every hour
 function scheduleCleanup() {
   setInterval(async () => {
     Logger.info('Running scheduled temp cleanup...');
@@ -83,31 +69,27 @@ function scheduleCleanup() {
   }, 60 * 60 * 1000);
 }
 
-// Start in production mode (HTTPS + webhook)
+// Start in production mode (HTTP internally — nginx handles SSL)
 if (NODE_ENV === 'production') {
   const webhookPath = `${WEBHOOK_PATH}/${BOT_TOKEN}`;
   const webhookUrl = `${WEBHOOK_DOMAIN}${webhookPath}`;
-
-  const sslOptions = {
-    cert: fs.readFileSync(SSL_CERT),
-    key: fs.readFileSync(SSL_KEY)
-  };
 
   bot.startWebhook(WEBHOOK_DOMAIN, webhookPath)
     .then((botInstance) => {
       app.use(botInstance.webhookCallback(webhookPath));
 
-      const server = https.createServer(sslOptions, app);
+      const server = http.createServer(app);
 
-      server.listen(HTTPS_PORT, () => {
-        Logger.info(`HTTPS server started in PRODUCTION mode on port ${HTTPS_PORT}`);
+      server.listen(PORT, '127.0.0.1', () => {
+        Logger.info(`HTTP server started in PRODUCTION mode on 127.0.0.1:${PORT}`);
         Logger.info(`Webhook URL: ${webhookUrl}`);
         Logger.info(`Downloads served at: ${WEBHOOK_DOMAIN}/downloads`);
+        Logger.info('SSL is handled by nginx reverse proxy');
         scheduleCleanup();
       });
 
       server.on('error', (error) => {
-        Logger.error('HTTPS server error', { error: error.message });
+        Logger.error('HTTP server error', { error: error.message });
         process.exit(1);
       });
     })
