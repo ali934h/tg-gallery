@@ -85,6 +85,25 @@ class TelegramBot {
     return userSessions.get(userId);
   }
 
+  buildJobSummary(session) {
+    if (!session?.pendingJob) return 'Session expired. Please send the URLs again.';
+    const { urls, archiveName } = session.pendingJob;
+    return (
+      `📋 ${urls.length} gallery URL${urls.length === 1 ? '' : 's'} detected\n\n` +
+      `📁 Archive name: ${archiveName}\n\n` +
+      `Tap “Start Download” to begin, “Rename” to choose a custom name, or “Cancel” to reset.\n\n` +
+      `Allowed characters: letters, numbers, - _ .`
+    );
+  }
+
+  buildPendingJobKeyboard(renameLabel = '✏️ Rename') {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('✅ Start Download', 'start_download')],
+      [Markup.button.callback(renameLabel, 'rename_archive')],
+      [Markup.button.callback('❌ Cancel', 'cancel_pending_job')]
+    ]);
+  }
+
   async retryWithBackoff(fn, maxRetries = 5, baseDelay = 1000) {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -128,12 +147,12 @@ class TelegramBot {
     const files = this.getDownloadedFiles();
     if (files.length === 0) return { text: 'No downloaded files found.', keyboard: null };
     const totalSize = FileManager.formatBytes(files.reduce((sum, f) => sum + f.size, 0));
-    const msg = `\u{1F5C2} Downloaded files: ${files.length} total (${totalSize})`;
+    const msg = `🗂 Downloaded files: ${files.length} total (${totalSize})`;
     const buttons = files.map((f, i) => {
       const displayName = f.name.substring(0, 40);
-      return [Markup.button.callback(`\u{1F4C2} ${i + 1}. ${displayName}`, `fi:${i}`)];
+      return [Markup.button.callback(`📂 ${i + 1}. ${displayName}`, `fi:${i}`)];
     });
-    buttons.push([Markup.button.callback('\u2699\uFE0F Manage All Files', 'manage_all')]);
+    buttons.push([Markup.button.callback('⚙️ Manage All Files', 'manage_all')]);
     return { text: msg, keyboard: Markup.inlineKeyboard(buttons) };
   }
 
@@ -143,16 +162,8 @@ class TelegramBot {
   }
 
   async sendNamePrompt(ctx, session) {
-    const defaultName = session.pendingJob.archiveName;
-    const msg =
-      `\u{1F4DD} Archive name:\n\n` +
-      `Default: ${defaultName}\n\n` +
-      `Tap "Start Download" to use it, or "Rename" to choose a custom name.\n\n` +
-      `Allowed characters: letters, numbers, - _ .`;
-    await ctx.reply(msg, Markup.inlineKeyboard([
-      [Markup.button.callback('\u2705 Start Download', 'start_download')],
-      [Markup.button.callback('\u270F\uFE0F Rename', 'rename_archive')]
-    ]));
+    const msg = this.buildJobSummary(session);
+    await ctx.reply(msg, this.buildPendingJobKeyboard());
   }
 
   async setBotCommands() {
@@ -176,9 +187,9 @@ class TelegramBot {
       if (!isAllowed(userId)) {
         Logger.warn(`Unauthorized access attempt by user: ${userId}`);
         if (ctx.callbackQuery) {
-          await ctx.answerCbQuery('\u26D4 Access denied.').catch(() => {});
+          await ctx.answerCbQuery('⛔ Access denied.').catch(() => {});
         } else {
-          await ctx.reply('\u26D4 You are not authorized to use this bot.').catch(() => {});
+          await ctx.reply('⛔ You are not authorized to use this bot.').catch(() => {});
         }
         return;
       }
@@ -188,34 +199,36 @@ class TelegramBot {
     this.bot.start((ctx) => {
       const session = this.getUserSession(ctx.from.id);
       session.state = STATE.IDLE;
+      session.pendingJob = null;
       Logger.info(`User started bot: ${ctx.from.id}`);
       ctx.reply(
         'Welcome to Gallery Downloader Bot!\n\n' +
-        '\ud83d\uddbc Gallery Downloader:\n' +
-        'Send me one or more gallery URLs (one per line) and I will extract all images, download them, and create a ZIP file.\n\n' +
+        '🖼 Gallery Downloader\n' +
+        'Send one or more gallery URLs (one per line), and I will extract the images, download them, and package them into a ZIP file.\n\n' +
         'Commands:\n' +
         '  /files - Manage downloaded files\n' +
-        '  /help  - How to use\n\n' +
+        '  /help  - How to use\n' +
+        '  /cancel - Reset the current flow\n\n' +
         'Supported gallery sites:\n' +
         strategyEngine.getSupportedDomains().map(d => `  - ${d}`).join('\n') + '\n\n' +
-        '\u26a1 Auto-detection: I can also try to extract images from similar sites automatically!'
+        '⚡ Auto-detection is enabled for similar gallery sites too.'
       );
     });
 
     this.bot.command('help', (ctx) => {
       ctx.reply(
         'How to use:\n\n' +
-        '\ud83d\uddbc *Gallery Downloader:*\n' +
+        '🖼 *Gallery Downloader*\n' +
         '1. Send one or more gallery URLs (one per line)\n' +
-        '2. Choose a name for the ZIP archive\n' +
-        '3. Tap "Start Download" and wait\n' +
-        '4. Receive your download link\n\n' +
+        '2. Review the detected URLs and archive name\n' +
+        '3. Tap *Start Download*, *Rename*, or *Cancel*\n' +
+        '4. Receive your download link when the ZIP is ready\n\n' +
         'Commands:\n' +
         '  /files  - View and manage files\n' +
         '  /cancel - Cancel current operation\n\n' +
         'Supported gallery sites:\n' +
         strategyEngine.getSupportedDomains().map(d => `  - ${d}`).join('\n') + '\n\n' +
-        '\u26a1 Auto-detection enabled for similar sites!',
+        '⚡ Auto-detection stays enabled for similar sites.',
         { parse_mode: 'Markdown' }
       );
     });
@@ -223,11 +236,11 @@ class TelegramBot {
     this.bot.command('cancel', (ctx) => {
       const session = this.getUserSession(ctx.from.id);
       if (session.state === STATE.PROCESSING) {
-        ctx.reply('A job is currently running. Please wait for it to finish.');
+        ctx.reply('A job is currently running. Use the on-screen “Cancel Download” button if you want to stop it.');
       } else {
         session.state = STATE.IDLE;
         session.pendingJob = null;
-        ctx.reply('Cancelled. Ready for new URLs.');
+        ctx.reply('✅ Cancelled. Ready for new URLs.');
       }
     });
 
@@ -236,14 +249,25 @@ class TelegramBot {
       keyboard ? ctx.reply(text, keyboard) : ctx.reply(text);
     });
 
-    // Gallery handlers
     this.bot.action('rename_archive', async (ctx) => {
       const session = this.getUserSession(ctx.from.id);
       await ctx.answerCbQuery();
+      if (!session.pendingJob) {
+        await ctx.editMessageText('Session expired. Please send the URLs again.');
+        return;
+      }
       session.state = STATE.WAITING_NAME;
       await ctx.editMessageText(
-        '\u270F\uFE0F Type your custom archive name:\n\nAllowed: letters, numbers, - _ .\nExample: my-gallery_2026'
+        '✏️ Type your custom archive name:\n\nAllowed: letters, numbers, - _ .\nExample: my-gallery_2026\n\nSend /cancel to stop renaming.'
       );
+    });
+
+    this.bot.action('cancel_pending_job', async (ctx) => {
+      const session = this.getUserSession(ctx.from.id);
+      session.state = STATE.IDLE;
+      session.pendingJob = null;
+      await ctx.answerCbQuery('Cancelled.');
+      await ctx.editMessageText('✅ Cancelled. Send new gallery URLs whenever you are ready.');
     });
 
     this.bot.action('start_download', async (ctx) => {
@@ -283,18 +307,18 @@ class TelegramBot {
       const downloadUrl = `${DOWNLOAD_BASE_URL}/${f.name}`;
       const meta = readMeta(f.name);
       const msg = [
-        `\u{1F4C2} *File Details*`, '',
+        `📂 *File Details*`, '',
         `Name: \`${e(f.name)}\``,
         `Size: ${e(size)}`,
         `Date: ${e(date)}`, '',
         'Link:', '```', e(downloadUrl), '```'
       ].join('\n');
       const rows = [
-        [Markup.button.callback('\u{1F5D1} Delete This File', `cd:${idx}`)],
-        [Markup.button.callback('\u2B05\uFE0F Back to List', 'back_to_list')]
+        [Markup.button.callback('🗑 Delete This File', `cd:${idx}`)],
+        [Markup.button.callback('⬅️ Back to List', 'back_to_list')]
       ];
       if (meta && meta.urls && meta.urls.length > 0) {
-        rows.unshift([Markup.button.callback('\u{1F517} Gallery Sources', `src:${idx}`)]);
+        rows.unshift([Markup.button.callback('🔗 Gallery Sources', `src:${idx}`)]);
       }
       await ctx.answerCbQuery();
       await ctx.editMessageText(msg, {
@@ -312,14 +336,14 @@ class TelegramBot {
       const meta = readMeta(f.name);
       if (!meta || !meta.urls || meta.urls.length === 0) { await ctx.answerCbQuery('No source URLs found.'); return; }
       const msg = [
-        '\u{1F517} *Gallery Sources*', `${e(f.name)}`, '', '```',
+        '🔗 *Gallery Sources*', `${e(f.name)}`, '', '```',
         meta.urls.map(u => e(u)).join('\n'), '```'
       ].join('\n');
       await ctx.answerCbQuery();
       await ctx.editMessageText(msg, {
         parse_mode: 'MarkdownV2',
         disable_web_page_preview: true,
-        ...Markup.inlineKeyboard([[Markup.button.callback('\u2B05\uFE0F Back', `fi:${idx}`)]])
+        ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Back', `fi:${idx}`)]])
       });
     });
 
@@ -330,10 +354,10 @@ class TelegramBot {
       const fileName = files[idx].name;
       await ctx.answerCbQuery();
       await ctx.editMessageText(
-        `\u26A0\uFE0F Are you sure you want to delete:\n\n${fileName}?`,
+        `⚠️ Are you sure you want to delete:\n\n${fileName}?`,
         Markup.inlineKeyboard([
-          [Markup.button.callback('\u2705 Yes, Delete', `dd:${idx}`)],
-          [Markup.button.callback('\u274C Cancel', `fi:${idx}`)]
+          [Markup.button.callback('✅ Yes, Delete', `dd:${idx}`)],
+          [Markup.button.callback('❌ Cancel', `fi:${idx}`)]
         ])
       );
     });
@@ -350,7 +374,7 @@ class TelegramBot {
         await ctx.answerCbQuery('File deleted.');
         const remaining = this.getDownloadedFiles();
         if (remaining.length === 0) {
-          await ctx.editMessageText('\u2705 File deleted. No more files.');
+          await ctx.editMessageText('✅ File deleted. No more files.');
         } else {
           const { text, keyboard } = this.buildFilesListMessage();
           await ctx.editMessageText(text, keyboard);
@@ -372,10 +396,10 @@ class TelegramBot {
       const totalSize = FileManager.formatBytes(files.reduce((sum, f) => sum + f.size, 0));
       await ctx.answerCbQuery();
       await ctx.editMessageText(
-        `\u2699\uFE0F Manage All Files\n\nTotal: ${files.length} file(s), ${totalSize}\n\nThis will permanently delete all downloaded files.`,
+        `⚙️ Manage All Files\n\nTotal: ${files.length} file(s), ${totalSize}\n\nThis will permanently delete all downloaded files.`,
         Markup.inlineKeyboard([
-          [Markup.button.callback('\u{1F5D1} Delete ALL Files', 'confirm_del_all')],
-          [Markup.button.callback('\u2B05\uFE0F Back to List', 'back_to_list')]
+          [Markup.button.callback('🗑 Delete ALL Files', 'confirm_del_all')],
+          [Markup.button.callback('⬅️ Back to List', 'back_to_list')]
         ])
       );
     });
@@ -384,10 +408,10 @@ class TelegramBot {
       const files = this.getDownloadedFiles();
       await ctx.answerCbQuery();
       await ctx.editMessageText(
-        `\u26A0\uFE0F Are you sure you want to delete ALL ${files.length} file(s)?\n\nThis cannot be undone.`,
+        `⚠️ Are you sure you want to delete ALL ${files.length} file(s)?\n\nThis cannot be undone.`,
         Markup.inlineKeyboard([
-          [Markup.button.callback('\u2705 Yes, Delete All', 'do_del_all')],
-          [Markup.button.callback('\u274C Cancel', 'manage_all')]
+          [Markup.button.callback('✅ Yes, Delete All', 'do_del_all')],
+          [Markup.button.callback('❌ Cancel', 'manage_all')]
         ])
       );
     });
@@ -406,7 +430,7 @@ class TelegramBot {
       }
       Logger.info(`Bulk delete: ${deleted}/${files.length} files removed`);
       await ctx.answerCbQuery(`Deleted ${deleted} file(s).`);
-      await ctx.editMessageText(`\u2705 Done. ${deleted} file(s) deleted.`);
+      await ctx.editMessageText(`✅ Done. ${deleted} file(s) deleted.`);
     });
 
     this.bot.on('text', async (ctx) => {
@@ -415,22 +439,24 @@ class TelegramBot {
 
       if (session.state === STATE.WAITING_NAME) {
         const input = text;
+        if (!session.pendingJob) {
+          session.state = STATE.IDLE;
+          ctx.reply('Session expired. Please send the URLs again.');
+          return;
+        }
         if (!VALID_NAME_REGEX.test(input)) {
-          ctx.reply('\u274C Invalid name. Only letters, numbers, - _ . are allowed.\n\nPlease type a valid name:');
+          ctx.reply('❌ Invalid name. Only letters, numbers, - _ . are allowed.\n\nPlease type a valid name:');
           return;
         }
         if (input.length < 2 || input.length > 80) {
-          ctx.reply('\u274C Name must be between 2 and 80 characters. Try again:');
+          ctx.reply('❌ Name must be between 2 and 80 characters. Try again:');
           return;
         }
         session.pendingJob.archiveName = input;
         session.state = STATE.IDLE;
         await ctx.reply(
-          `\u2705 Name set to: ${input}\n\nReady to download.`,
-          Markup.inlineKeyboard([
-            [Markup.button.callback('\u2705 Start Download', 'start_download')],
-            [Markup.button.callback('\u270F\uFE0F Rename Again', 'rename_archive')]
-          ])
+          `✅ Archive name updated to: ${input}\n\n${this.buildJobSummary(session)}`,
+          this.buildPendingJobKeyboard('✏️ Rename Again')
         );
         return;
       }
@@ -450,6 +476,7 @@ class TelegramBot {
         return;
       }
 
+      await ctx.reply(`🔍 Detected ${lines.length} URL${lines.length === 1 ? '' : 's'}. Preparing download options...`);
       const defaultName = this.buildDefaultName(lines);
       session.pendingJob = { urls: lines, archiveName: defaultName };
       session.state = STATE.IDLE;
@@ -474,13 +501,13 @@ class TelegramBot {
     const abortController = new AbortController();
     session.abortController = abortController;
     const { signal } = abortController;
-    const cancelKeyboard = Markup.inlineKeyboard([[Markup.button.callback('\u274C Cancel Download', 'cancel_download')]]);
-    const statusMsg = await ctx.reply('Starting... please wait.', cancelKeyboard);
+    const cancelKeyboard = Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel Download', 'cancel_download')]]);
+    const statusMsg = await ctx.reply('🚀 Starting... please wait.', cancelKeyboard);
     const msgId = statusMsg.message_id;
     let tempDir = null;
     try {
       await this.updateStatus(ctx, msgId,
-        `Extracting images from ${urls.length} ${urls.length === 1 ? 'gallery' : 'galleries'}...`,
+        `🔎 Extracting images from ${urls.length} ${urls.length === 1 ? 'gallery' : 'galleries'}...`,
         cancelKeyboard
       );
       const galleries = [];
@@ -498,7 +525,7 @@ class TelegramBot {
           if (!strategy || imageUrls.length === 0) {
             Logger.info(`Trying fallback strategies for: ${url}`);
             await this.updateStatus(ctx, msgId,
-              `Testing extraction methods for gallery ${i + 1}/${urls.length}...\n(This may take a moment)`,
+              `🧪 Testing extraction methods for gallery ${i + 1}/${urls.length}...\n(This may take a moment)`,
               cancelKeyboard
             );
             const result = await strategyEngine.findWorkingStrategy(url, JsdomScraper, 5);
@@ -519,17 +546,18 @@ class TelegramBot {
           galleries.push({ name: galleryName, urls: [], useProxy: false });
         }
         await this.updateStatus(ctx, msgId,
-          `Extracting images... (${i + 1}/${urls.length} galleries done)`,
+          `🔎 Extracting images... (${i + 1}/${urls.length} galleries done)`,
           cancelKeyboard
         );
       }
       if (unsupportedUrls.length > 0) {
-        await ctx.reply(`\u26a0\ufe0f Could not extract images from ${unsupportedUrls.length} URL(s).\nContinuing with successful galleries...`).catch(() => {});
+        await ctx.reply(`⚠️ Could not extract images from ${unsupportedUrls.length} URL(s).\nContinuing with successful galleries...`).catch(() => {});
       }
       const totalImages = galleries.reduce((sum, g) => sum + g.urls.length, 0);
       if (totalImages === 0) throw new Error('No images found in any of the provided galleries.');
+      const successfulGalleries = galleries.filter(g => g.urls.length > 0).length;
       await this.updateStatus(ctx, msgId,
-        `Found ${totalImages} images across ${galleries.filter(g => g.urls.length > 0).length} galleries.\nDownloading...`,
+        `✅ Found ${totalImages} images across ${successfulGalleries} ${successfulGalleries === 1 ? 'gallery' : 'galleries'}.\n⬇️ Downloading...`,
         cancelKeyboard
       );
       tempDir = await FileManager.createTempDir('galleries');
@@ -542,7 +570,7 @@ class TelegramBot {
           if (now - lastUpdateTime >= UPDATE_INTERVAL_MS) {
             lastUpdateTime = now;
             this.updateStatus(ctx, msgId,
-              `Downloading gallery ${progress.completedGalleries + 1}/${progress.totalGalleries}\n` +
+              `⬇️ Downloading gallery ${progress.completedGalleries + 1}/${progress.totalGalleries}\n` +
               `Current: ${progress.galleryName}\n` +
               `Progress: ${progress.galleryProgress.current}/${progress.galleryProgress.total} images`,
               cancelKeyboard
@@ -554,25 +582,37 @@ class TelegramBot {
       );
       if (downloadResult.successImages === 0) {
         await this.updateStatus(ctx, msgId,
-          signal.aborted ? 'Cancelled. No images were downloaded yet.' : 'Failed to download any images.'
+          signal.aborted ? '⚠️ Cancelled. No images were downloaded yet.' : '❌ Failed to download any images.'
         );
         return;
       }
-      await this.updateStatus(ctx, msgId, signal.aborted ? `Cancelled. Packaging ${downloadResult.successImages} images...` : 'Creating ZIP archive...');
+      await this.updateStatus(ctx, msgId, signal.aborted ? `⚠️ Cancelled. Packaging ${downloadResult.successImages} images...` : '📦 Creating ZIP archive...');
       const zipPath = await ZipCreator.createZip(tempDir, archiveName, DOWNLOADS_DIR);
       const zipFileName = path.basename(zipPath);
       saveMeta(zipFileName, urls);
       const downloadUrl = `${DOWNLOAD_BASE_URL}/${zipFileName}`;
       const stats = fs.statSync(zipPath);
       const fileSize = FileManager.formatBytes(stats.size);
-      const prefix = signal.aborted ? '\u26A0\uFE0F Partial' : '\u2705 Done';
-      const finalMsg = [`${prefix} ${e(String(downloadResult.successImages))} images, ${e(fileSize)}`, '', '```', e(downloadUrl), '```'].join('\n');
+      const prefix = signal.aborted ? '⚠️ Partial download complete' : '✅ Download complete';
+      const finalMsg = [
+        `*${e(prefix)}*`, '',
+        `📦 File: \`${e(zipFileName)}\``,
+        `🖼 Images: ${e(String(downloadResult.successImages))}`,
+        `💾 Size: ${e(fileSize)}`,
+        '',
+        `🔗 Download Link:`,
+        '```',
+        e(downloadUrl),
+        '```',
+        '',
+        `📁 Tip: send /files to manage saved downloads.`
+      ].join('\n');
       await this.retryWithBackoff(() => ctx.reply(finalMsg, { parse_mode: 'MarkdownV2', disable_web_page_preview: true }));
       await this.retryWithBackoff(() => ctx.telegram.deleteMessage(ctx.chat.id, msgId)).catch(() => {});
       Logger.info(`Job complete for user ${ctx.from.id}: ${zipFileName}`);
     } catch (error) {
       Logger.error('Gallery processing failed', { error: error.message, user: ctx.from.id });
-      await this.updateStatus(ctx, msgId, `Error: ${error.message}\n\nPlease check your URLs and try again.`);
+      await this.updateStatus(ctx, msgId, `❌ Error: ${error.message}\n\nPlease check your URLs and try again.`);
     } finally {
       if (tempDir) await FileManager.deleteDir(tempDir).catch(() => {});
       session.state = STATE.IDLE;
