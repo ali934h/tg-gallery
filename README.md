@@ -1,4 +1,4 @@
-# Gallery Downloader Bot — 3x-ui Edition
+# tg-gallery — Telegram Gallery Downloader Bot
 
 Telegram bot for downloading gallery images, integrated with **3x-ui** panel for proxy support.
 
@@ -23,13 +23,13 @@ Telegram bot for downloading gallery images, integrated with **3x-ui** panel for
 │          ├── Inbound: VLESS/Trojan (any port)   ← for VPN users  │
 │          └── Inbound: mixed 127.0.0.1:1080      ← for this bot   │
 │                                                                  │
-│  Gallery Bot  (your-bot-domain.com:443)                          │
+│  tg-gallery  (your-bot-domain.com)                               │
+│    ├── nginx:443 (SSL) → Node.js:127.0.0.1:3000                 │
 │    └── PROXY_URL=socks5://user:pass@127.0.0.1:1080               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-> ⚠️ **The bot domain MUST be different from the 3x-ui domain.**  
-> Both services listen on port 443 — they need separate domains/IPs.
+> ⚠️ **The bot domain MUST be different from the 3x-ui domain.**
 
 ---
 
@@ -52,29 +52,14 @@ In the 3x-ui web panel, go to **Inbounds → Add Inbound**:
 | Username   | (any value)     |
 | Password   | (any value)     |
 
-> This inbound is **local only** (127.0.0.1) — not exposed to the internet.  
-> Note your username and password — you will need them during installation.
-
-> 💡 **Why `mixed`?** The 3x-ui panel may not show `socks` as a protocol option.  
-> The `mixed` protocol supports both SOCKS5 and HTTP proxy on the same port.
+> This inbound is **local only** (127.0.0.1) — not exposed to the internet.
 
 ### Step 3 — Prepare bot domain & SSL
 
-You have **two options** for SSL:
-
 #### Option A — Let's Encrypt (Certbot) ✅ Recommended
 
-Simplest option. No Cloudflare proxy needed.
-
 ```bash
-# Stop the bot first (it uses port 443)
-pm2 stop gallery-bot
-
-# Get certificate
 certbot certonly --standalone -d your-bot-domain.com
-
-# Restart bot after
-pm2 restart gallery-bot --update-env
 ```
 
 Then use these paths in the installer:
@@ -83,66 +68,33 @@ SSL_CERT = /etc/letsencrypt/live/your-bot-domain.com/fullchain.pem
 SSL_KEY  = /etc/letsencrypt/live/your-bot-domain.com/privkey.pem
 ```
 
-**Cloudflare DNS:** leave proxy **disabled** (grey cloud ☁️)
-
----
-
 #### Option B — Cloudflare Origin Certificate
 
-If you use a **Cloudflare Origin Certificate** (generated from Cloudflare dashboard → SSL/TLS → Origin Server), you **must** follow these settings exactly:
-
-**1. Cloudflare DNS settings:**
-
-| Setting | Value |
-|---------|-------|
-| DNS Proxy | 🟠 **Enabled (orange cloud)** |
-
-> ⚠️ If you turn the proxy OFF, Telegram will connect directly to your server and the Origin Certificate will fail verification (`SSL error: certificate verify failed`). The Origin Certificate is only trusted by Cloudflare, not by public CAs.
-
-**2. Cloudflare SSL/TLS mode:**
-
-Go to your Cloudflare dashboard → **SSL/TLS → Overview** and set:
-
-| Mode | Description | Use? |
-|------|-------------|------|
-| Off | No HTTPS | ❌ |
-| Flexible | HTTPS to Cloudflare only, HTTP to server | ❌ |
-| Full | HTTPS to server, no cert verification | ⚠️ Works but not secure |
-| **Full (strict)** | HTTPS to server, verifies Origin Cert | ✅ **Required** |
-
-Set it to **Full (strict)**.
-
-**3. How traffic flows with this option:**
-
-```
-Telegram → Cloudflare (public cert ✅) → Your Server (Origin Cert ✅)
-```
-
-**4. SSL cert paths** (use the files you downloaded from Cloudflare Origin Server page):
-```
-SSL_CERT = /path/to/cert.pem
-SSL_KEY  = /path/to/key.pem
-```
+If you use a Cloudflare Origin Certificate:
+- Enable Cloudflare proxy 🟠 (orange cloud)
+- Set SSL/TLS mode to **Full (strict)**
 
 ---
 
 ## Installation
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ali934h/gallery-bot-3xui/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/ali934h/tg-gallery/main/install.sh)
 ```
 
 The installer will:
-- Install Node.js, PM2
-- Clone the bot repository
+- Install Node.js, PM2, nginx (if not present)
+- Clone the repository to `/root/tg-gallery`
 - Configure environment variables
-- Start the bot with PM2
+- Write nginx config to `/etc/nginx/conf.d/tg-gallery.conf` (safe — does not touch other configs)
+- Start the bot with PM2 as `tg-gallery`
 
 You'll be asked for:
 - Telegram Bot Token
-- Bot domain (separate from 3x-ui domain!)
+- Bot domain
 - SSL certificate paths
-- Proxy username & password (from the mixed inbound you created)
+- Internal HTTP port (default: 3000)
+- Proxy username & password
 - Allowed user IDs (optional)
 - Download concurrency
 - Downloads directory
@@ -158,9 +110,7 @@ You'll be asked for:
 3. Tap "Start Download" and wait
 4. Receive your download link
 
-**Officially supported sites:**
-- See `src/config/siteStrategies.json` for full list
-- Auto-detection works for similar gallery sites
+**Supported sites:** See `src/config/siteStrategies.json` for full list.
 
 ---
 
@@ -171,17 +121,15 @@ Each site strategy in `src/config/siteStrategies.json` has a `useProxy` flag:
 ```json
 {
   "example-site.com": {
-    "useProxy": true,
-    ...
+    "useProxy": true
   },
   "another-site.com": {
-    "useProxy": false,
-    ...
+    "useProxy": false
   }
 }
 ```
 
-When `useProxy: true`, the bot routes traffic through `socks5://user:pass@127.0.0.1:1080` — the `mixed` inbound you created in 3x-ui.
+When `useProxy: true`, traffic routes through `socks5://user:pass@127.0.0.1:1080`.
 
 ---
 
@@ -194,14 +142,14 @@ curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 
 | `last_error_message` | Cause | Fix |
 |----------------------|-------|-----|
-| `SSL error: certificate verify failed` | Using Origin Cert with proxy OFF | Enable Cloudflare proxy (orange cloud) |
-| `Wrong response: 521` | Cloudflare can't reach your server | Check that bot is running: `pm2 status` |
-| `Connection refused` | Bot not running or wrong port | `pm2 restart gallery-bot --update-env` |
+| `SSL error: certificate verify failed` | Origin Cert with proxy OFF | Enable Cloudflare proxy (orange cloud) |
+| `Wrong response: 521` | Cloudflare can't reach server | Check bot is running: `pm2 status` |
+| `Connection refused` | Bot not running or wrong port | `pm2 restart tg-gallery --update-env` |
 | *(empty)* | ✅ Everything working | — |
 
 ### View live logs
 ```bash
-pm2 logs gallery-bot
+pm2 logs tg-gallery
 ```
 
 ---
@@ -219,25 +167,20 @@ pm2 logs gallery-bot
 
 ## File Management
 
-Use `/files` command in Telegram to:
-- View all downloaded ZIP files
-- See file sizes and dates
-- Download individual files
-- Delete files
-- Bulk delete all files
-
-Files are stored in the directory you specified during installation (default: `/root/gallery-downloads`).
+Use `/files` command to view, download, or delete ZIP files.
+Files are stored in the directory specified during installation (default: `/root/tg-gallery-downloads`).
 
 ---
 
 ## Useful Commands
 
 ```bash
-pm2 logs gallery-bot           # live logs
-pm2 restart gallery-bot        # restart
-pm2 stop gallery-bot           # stop
-pm2 restart gallery-bot \      # restart with new env vars
-  --update-env
+pm2 logs tg-gallery            # live logs
+pm2 restart tg-gallery         # restart
+pm2 stop tg-gallery            # stop
+pm2 restart tg-gallery --update-env  # restart with new env vars
+nginx -t                       # test nginx config
+nginx -s reload                # reload nginx
 systemctl status x-ui          # check 3x-ui status
 ```
 
@@ -245,7 +188,8 @@ systemctl status x-ui          # check 3x-ui status
 
 ## Requirements
 
-- Ubuntu 20.04+ or Debian 11+ (tested)
-- Node.js 18+ (auto-installed)
+- Ubuntu 20.04+ or Debian 11+
+- Node.js 20+ (auto-installed)
+- nginx (auto-installed)
 - 3x-ui panel with mixed inbound
 - Valid SSL certificate
