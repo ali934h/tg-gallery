@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-#  Gallery Downloader Bot — 3x-ui Edition
+#  tg-gallery — Telegram Gallery Downloader Bot
 #  Requires: 3x-ui already installed with a 'mixed' inbound
 #            on 127.0.0.1:1080
 #
 #  Usage:
-#    bash <(curl -Ls https://raw.githubusercontent.com/ali934h/gallery-bot-3xui/main/install.sh)
+#    bash <(curl -Ls https://raw.githubusercontent.com/ali934h/tg-gallery/main/install.sh)
 # ============================================================
 
 set -e
@@ -21,14 +21,14 @@ warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[x]${NC} $1"; exit 1; }
 ask()  { echo -e "${BLUE}[?]${NC} $1"; }
 
-INSTALL_DIR="/root/gallery-bot-3xui"
-REPO_URL="https://github.com/ali934h/gallery-bot-3xui.git"
-NGINX_CONF_FILE="/etc/nginx/conf.d/gallery-bot.conf"
+INSTALL_DIR="/root/tg-gallery"
+REPO_URL="https://github.com/ali934h/tg-gallery.git"
+NGINX_CONF_FILE="/etc/nginx/conf.d/tg-gallery.conf"
 
 clear
 echo -e ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   Gallery Downloader Bot — 3x-ui Edition     ║${NC}"
+echo -e "${GREEN}║        tg-gallery — Gallery Downloader Bot        ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo -e ""
 
@@ -100,7 +100,6 @@ if [[ "$WEBHOOK_DOMAIN" =~ ^http:// ]]; then
   warn "Changed http:// to https:// (required for Telegram webhooks)"
 fi
 WEBHOOK_DOMAIN=${WEBHOOK_DOMAIN%/}
-# Extract bare domain for nginx server_name
 BARE_DOMAIN=${WEBHOOK_DOMAIN#https://}
 BARE_DOMAIN=${BARE_DOMAIN%/}
 
@@ -115,11 +114,9 @@ read -r SSL_KEY
 ask "Internal HTTP port for Node.js (default: 3000, change if already in use):"
 read -r INPUT_PORT
 INTERNAL_PORT=${INPUT_PORT:-3000}
-# Validate port is a number in range
 if ! [[ "$INTERNAL_PORT" =~ ^[0-9]+$ ]] || (( INTERNAL_PORT < 1024 || INTERNAL_PORT > 65535 )); then
   err "Invalid port. Must be a number between 1024 and 65535."
 fi
-# Check if port is already in use
 if ss -tlnp 2>/dev/null | grep -q ":${INTERNAL_PORT} "; then
   warn "Port ${INTERNAL_PORT} appears to be in use already."
   ask "Use it anyway? [y/N]:"
@@ -134,9 +131,9 @@ ask "Download concurrency (1-20, default: 5):"
 read -r DOWNLOAD_CONCURRENCY
 DOWNLOAD_CONCURRENCY=${DOWNLOAD_CONCURRENCY:-5}
 
-ask "Downloads directory (default: /root/gallery-downloads):"
+ask "Downloads directory (default: /root/tg-gallery-downloads):"
 read -r DOWNLOADS_DIR
-DOWNLOADS_DIR=${DOWNLOADS_DIR:-/root/gallery-downloads}
+DOWNLOADS_DIR=${DOWNLOADS_DIR:-/root/tg-gallery-downloads}
 
 DOWNLOAD_BASE_URL="${WEBHOOK_DOMAIN}/downloads"
 
@@ -259,16 +256,14 @@ EOF
 chmod 600 "$INSTALL_DIR/.env"
 log ".env written and secured (chmod 600)."
 
-# ── nginx config (safe: only adds a new conf.d file) ─────────
+# ── nginx config ───────────────────────────────────────────────
 log "Writing nginx config: $NGINX_CONF_FILE"
 
-# Backup existing file if present
 if [[ -f "$NGINX_CONF_FILE" ]]; then
   cp "$NGINX_CONF_FILE" "${NGINX_CONF_FILE}.bak.$(date +%s)"
   warn "Existing nginx config backed up."
 fi
 
-# Write nginx config using printf to avoid heredoc quoting issues
 printf 'server {\n' > "$NGINX_CONF_FILE"
 printf '    listen 80;\n' >> "$NGINX_CONF_FILE"
 printf '    server_name %s;\n' "$BARE_DOMAIN" >> "$NGINX_CONF_FILE"
@@ -306,7 +301,6 @@ printf '}\n' >> "$NGINX_CONF_FILE"
 
 log "nginx config written."
 
-# Test nginx config before reloading
 if ! nginx -t 2>/dev/null; then
   err "nginx config test failed! Check $NGINX_CONF_FILE manually."
 fi
@@ -318,12 +312,12 @@ log "nginx reloaded successfully."
 # ── Start / restart with PM2 ─────────────────────────────────
 cd "$INSTALL_DIR"
 
-if pm2 list | grep -q "gallery-bot"; then
+if pm2 list | grep -q "tg-gallery"; then
   log "Restarting existing PM2 process..."
-  pm2 restart gallery-bot --update-env
+  pm2 restart tg-gallery --update-env
 else
-  log "Starting bot with PM2..."
-  pm2 start src/index.js --name gallery-bot
+  log "Starting tg-gallery with PM2..."
+  pm2 start src/index.js --name tg-gallery
 fi
 
 log "Saving PM2 process list..."
@@ -347,13 +341,13 @@ echo -e "  Node port    : 127.0.0.1:${INTERNAL_PORT} (internal)"
 echo -e "  nginx conf   : ${NGINX_CONF_FILE}"
 echo ""
 echo -e "  Architecture:"
-echo -e "    Internet → nginx:443 (SSL) → Node.js:${INTERNAL_PORT} (internal)"
+echo -e "    Internet → nginx:443 (SSL) → tg-gallery:${INTERNAL_PORT} (internal)"
 echo -e "    Other projects on nginx are NOT affected."
 echo ""
 echo -e "  Useful commands:"
-echo -e "    pm2 logs gallery-bot        # view live logs"
-echo -e "    pm2 restart gallery-bot     # restart bot"
-echo -e "    pm2 stop gallery-bot        # stop bot"
+echo -e "    pm2 logs tg-gallery         # view live logs"
+echo -e "    pm2 restart tg-gallery      # restart bot"
+echo -e "    pm2 stop tg-gallery         # stop bot"
 echo -e "    nginx -t                    # test nginx config"
 echo -e "    nginx -s reload             # reload nginx"
 echo -e "    systemctl status x-ui       # check 3x-ui status"
