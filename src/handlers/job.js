@@ -131,7 +131,8 @@ async function uploadToChannel(ctx, info) {
           ctx.chat.id,
           statusId,
           null,
-          `⚠️ Channel upload failed: ${escapeHtml(err.message)}\nDirect link is still available above.`
+          `⚠️ Channel upload failed: ${escapeHtml(err.message)}\nDirect link is still available above.`,
+          { parse_mode: "HTML" }
         )
       ).catch(() => {});
     } else {
