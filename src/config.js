@@ -140,36 +140,49 @@ const config = Object.freeze({
     if (!enabled) {
       return { enabled: false };
     }
-    const apiId = num("TG_API_ID");
-    const apiHash = process.env.TG_API_HASH || "";
-    const session = process.env.TG_SESSION || "";
-    const channelId = bigInt("UPLOAD_CHANNEL_ID");
-    const maxBytes = num("TELEGRAM_UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024, {
-      min: 1024 * 1024,
-    });
-    const missing = [];
-    if (!Number.isFinite(apiId) || apiId <= 0) missing.push("TG_API_ID");
-    if (!apiHash) missing.push("TG_API_HASH");
-    if (!channelId) missing.push("UPLOAD_CHANNEL_ID");
-    if (!session) missing.push("TG_SESSION (run `node setup.js`)");
-    if (missing.length) {
-      // Don't crash — keep the bot running with upload disabled so users
-      // can fix the .env later without losing the link-only flow.
+    // A bad value in any of these env vars (e.g. TG_API_ID=abc) must NOT
+    // crash the process — channel upload is optional and the link-only
+    // flow has to keep working. Catch parse errors and fall back to
+    // disabled with a clear warning.
+    try {
+      const apiId = num("TG_API_ID");
+      const apiHash = process.env.TG_API_HASH || "";
+      const session = process.env.TG_SESSION || "";
+      const channelId = bigInt("UPLOAD_CHANNEL_ID");
+      const maxBytes = num("TELEGRAM_UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024, {
+        min: 1024 * 1024,
+      });
+      const missing = [];
+      if (!Number.isFinite(apiId) || apiId <= 0) missing.push("TG_API_ID");
+      if (!apiHash) missing.push("TG_API_HASH");
+      if (!channelId) missing.push("UPLOAD_CHANNEL_ID");
+      if (!session) missing.push("TG_SESSION (run `node setup.js`)");
+      if (missing.length) {
+        // Don't crash — keep the bot running with upload disabled so users
+        // can fix the .env later without losing the link-only flow.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[config] TELEGRAM_UPLOAD_ENABLED=true but missing: ${missing.join(", ")}. ` +
+            `Channel upload disabled until these are filled in.`
+        );
+        return { enabled: false };
+      }
+      return {
+        enabled: true,
+        apiId,
+        apiHash,
+        session,
+        channelId,
+        maxBytes,
+      };
+    } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(
-        `[config] TELEGRAM_UPLOAD_ENABLED=true but missing: ${missing.join(", ")}. ` +
-          `Channel upload disabled until these are filled in.`
+        `[config] TELEGRAM_UPLOAD_ENABLED=true but a value is malformed: ${err.message}. ` +
+          `Channel upload disabled until the .env is corrected.`
       );
       return { enabled: false };
     }
-    return {
-      enabled: true,
-      apiId,
-      apiHash,
-      session,
-      channelId,
-      maxBytes,
-    };
   })(),
 });
 
