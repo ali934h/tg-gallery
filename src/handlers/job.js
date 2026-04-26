@@ -1,11 +1,14 @@
 /**
  * Long-running gallery-download job: extract images, download them, package
- * into a ZIP, and reply with a download link.
+ * into a ZIP, reply with a direct download link, and (when the archive fits
+ * Telegram's per-file cap) also send the ZIP straight to the user's chat
+ * via MTProto so they can save it inside Telegram itself.
  */
 
 const path = require("path");
 const fsp = require("fs").promises;
-const { Markup } = require("telegraf");
+
+const { Markup } = require("../tg/markup");
 const config = require("../config");
 const logger = require("../logger");
 const fileManager = require("../fileManager");
@@ -20,6 +23,7 @@ const { retryWithBackoff } = require("../utils/telegramRetry");
 const { escapeHtml } = require("../htmlEscape");
 
 const UPDATE_INTERVAL_MS = 5000;
+const UPLOAD_PROGRESS_INTERVAL_MS = 4000;
 
 async function safeUpdateStatus(ctx, messageId, text, keyboard = null) {
   const opts = keyboard ? keyboard : {};
@@ -32,6 +36,66 @@ function cancelKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("❌ Cancel Download", "cancel_download")],
   ]);
+}
+
+async function sendZipToChat(ctx, zipPath, zipFileName, statusLabel) {
+  let lastEdit = 0;
+  let progressMsgId = null;
+
+  try {
+    const sent = await retryWithBackoff(() =>
+      ctx.reply(`📤 Uploading <b>${escapeHtml(zipFileName)}</b> to chat...`, {
+        parse_mode: "HTML",
+      })
+    );
+    progressMsgId = sent ? sent.message_id : null;
+  } catch (_e) {
+    // ignore — upload still runs
+  }
+
+  try {
+    await ctx.client.sendFile(ctx.chat.id, {
+      file: zipPath,
+      caption: `📦 ${zipFileName}\n${statusLabel}`,
+      forceDocument: true,
+      progressCallback: (uploaded, total) => {
+        const now = Date.now();
+        if (!progressMsgId || !total || now - lastEdit < UPLOAD_PROGRESS_INTERVAL_MS) {
+          return;
+        }
+        lastEdit = now;
+        const pct = ((Number(uploaded) / Number(total)) * 100).toFixed(1);
+        ctx.client
+          .editMessage(ctx.chat.id, {
+            message: progressMsgId,
+            text: `📤 Uploading <b>${escapeHtml(zipFileName)}</b>... ${pct}%`,
+            parseMode: "html",
+          })
+          .catch(() => {});
+      },
+    });
+    if (progressMsgId) {
+      await ctx.client
+        .deleteMessages(ctx.chat.id, [progressMsgId], { revoke: true })
+        .catch(() => {});
+    }
+  } catch (err) {
+    logger.error("In-chat upload failed", {
+      error: err.message,
+      file: zipFileName,
+    });
+    if (progressMsgId) {
+      await ctx.client
+        .editMessage(ctx.chat.id, {
+          message: progressMsgId,
+          text:
+            `⚠️ Telegram upload failed: ${escapeHtml(err.message)}\n` +
+            `Direct link is still available above.`,
+          parseMode: "html",
+        })
+        .catch(() => {});
+    }
+  }
 }
 
 async function processGalleries(ctx, urls, requestedName) {
@@ -209,6 +273,18 @@ async function processGalleries(ctx, urls, requestedName) {
       ctx.telegram.deleteMessage(ctx.chat.id, msgId)
     ).catch(() => {});
 
+    if (stats.size > config.telegramMaxUploadBytes) {
+      const limitGb = (config.telegramMaxUploadBytes / 1024 / 1024 / 1024).toFixed(1);
+      await ctx
+        .reply(
+          `⚠️ Archive size (${fileSize}) exceeds Telegram's ${limitGb} GB upload limit.\n` +
+            `Use the direct link above to download.`
+        )
+        .catch(() => {});
+    } else {
+      await sendZipToChat(ctx, zipPath, zipFileName, statusLine);
+    }
+
     logger.info(`Job complete for user ${ctx.from.id}: ${zipFileName}`);
   } catch (err) {
     logger.error("Gallery processing failed", {
@@ -236,7 +312,7 @@ function register(bot) {
         .catch(() => {});
       return;
     }
-    await ctx.deleteMessage().catch(() => {});
+    await ctx.deleteMessage();
     const { urls, archiveName: name } = session.pendingJob;
     session.pendingJob = null;
     await processGalleries(ctx, urls, name);

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# tg-gallery installer — sets up Node.js, PM2, the repo, an nginx vhost, and
-# starts the bot under PM2 with a webhook secret.
+# tg-gallery installer — sets up Node.js, PM2, the repo, an nginx vhost (for
+# /health + /downloads), and starts the bot under PM2.
+#
+# The bot connects to Telegram via MTProto using its bot token, so there is
+# no webhook — it just needs BOT_TOKEN + TG_API_ID + TG_API_HASH and an
+# outbound connection.
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/ali934h/tg-gallery/main/install.sh)
 set -euo pipefail
@@ -53,6 +57,17 @@ prompt_file() {
   printf -v "$var" "%s" "$val"
 }
 
+prompt_int() {
+  local var="$1"; local label="$2"; local val=""
+  while true; do
+    read -r -p "$label: " val
+    if [[ "$val" =~ ^[0-9]+$ && "$val" -gt 0 ]]; then break
+    else warn "Must be a positive integer."
+    fi
+  done
+  printf -v "$var" "%s" "$val"
+}
+
 prompt_optional() {
   local var="$1"; local label="$2"; local default="${3:-}"
   read -r -p "$label [${default}]: " val || true
@@ -61,10 +76,12 @@ prompt_optional() {
 
 step "Collecting configuration"
 prompt        BOT_TOKEN       "Telegram BOT_TOKEN (from @BotFather)"
-prompt        WEBHOOK_DOMAIN  "Bot HTTPS domain (e.g. bot.example.com)"
-WEBHOOK_DOMAIN="${WEBHOOK_DOMAIN#http://}"
-WEBHOOK_DOMAIN="${WEBHOOK_DOMAIN#https://}"
-WEBHOOK_DOMAIN="${WEBHOOK_DOMAIN%/}"
+prompt_int    TG_API_ID       "TG_API_ID (numeric, from https://my.telegram.org/apps)"
+prompt        TG_API_HASH     "TG_API_HASH (from https://my.telegram.org/apps)"
+prompt        PUBLIC_HOST     "Public HTTPS host (e.g. gallery.example.com — used for /downloads)"
+PUBLIC_HOST="${PUBLIC_HOST#http://}"
+PUBLIC_HOST="${PUBLIC_HOST#https://}"
+PUBLIC_HOST="${PUBLIC_HOST%/}"
 prompt_file   SSL_FULLCHAIN   "Path to fullchain.pem"
 prompt_file   SSL_KEY         "Path to privkey.pem"
 
@@ -110,13 +127,12 @@ if [[ "$ENABLE_PROXY" =~ ^[Yy]$ ]]; then
   fi
 fi
 
-WEBHOOK_SECRET="$(openssl rand -hex 32)"
-DOWNLOAD_BASE_URL="https://${WEBHOOK_DOMAIN}/downloads"
+DOWNLOAD_BASE_URL="https://${PUBLIC_HOST}/downloads"
 
 echo
 step "Configuration summary"
 cat <<EOF
-  Bot domain     : https://${WEBHOOK_DOMAIN}
+  Public host    : https://${PUBLIC_HOST}
   Internal port  : ${PORT}
   SSL fullchain  : ${SSL_FULLCHAIN}
   SSL key        : ${SSL_KEY}
@@ -126,7 +142,7 @@ cat <<EOF
   Concurrency    : ${DOWNLOAD_CONCURRENCY}
   Allowed users  : ${ALLOWED_USERS:-<everyone>}
   Proxy          : ${PROXY_URL:-<disabled>}
-  Webhook secret : (generated, ${#WEBHOOK_SECRET} chars)
+  TG_API_ID      : ${TG_API_ID}
   nginx conf     : ${NGINX_CONF_FILE}
   Install dir    : ${INSTALL_DIR}
 EOF
@@ -169,6 +185,11 @@ if [[ -f "$NGINX_CONF_FILE" ]]; then
   cp "$NGINX_CONF_FILE" "${NGINX_CONF_FILE}.bak.$(date +%Y%m%d%H%M%S)"
   rm -f "$NGINX_CONF_FILE"
 fi
+# Old vhosts from earlier installs also matched this hostname; remove them
+# so they don't shadow the new config.
+for stale in /etc/nginx/conf.d/gallery-bot.conf /etc/nginx/conf.d/gallery-bot.conf.bak.*; do
+  [[ -e "$stale" ]] && rm -f "$stale"
+done
 if [[ -d "$INSTALL_DIR" ]]; then
   rm -rf "$INSTALL_DIR"
 fi
@@ -191,10 +212,12 @@ cat > "$INSTALL_DIR/.env" <<EOF
 NODE_ENV=production
 
 BOT_TOKEN=${BOT_TOKEN}
-WEBHOOK_SECRET=${WEBHOOK_SECRET}
-WEBHOOK_DOMAIN=https://${WEBHOOK_DOMAIN}
-WEBHOOK_PATH=/webhook
+TG_API_ID=${TG_API_ID}
+TG_API_HASH=${TG_API_HASH}
+TG_SESSION_FILE=${INSTALL_DIR}/telegram.session
+
 PORT=${PORT}
+HOST=127.0.0.1
 
 DOWNLOADS_DIR=${DOWNLOADS_DIR}
 DOWNLOAD_BASE_URL=${DOWNLOAD_BASE_URL}
@@ -205,18 +228,21 @@ DOWNLOAD_CONCURRENCY=${DOWNLOAD_CONCURRENCY}
 
 PROXY_URL=${PROXY_URL}
 
+TELEGRAM_MAX_UPLOAD_BYTES=2147483648
+
 LOG_LEVEL=info
 EOF
 chmod 600 "$INSTALL_DIR/.env"
+touch "$INSTALL_DIR/telegram.session"
+chmod 600 "$INSTALL_DIR/telegram.session"
 
 # ── nginx ────────────────────────────────────────────────────
 step "Writing nginx config $NGINX_CONF_FILE"
 sed \
-  -e "s|__HOST__|${WEBHOOK_DOMAIN}|g" \
+  -e "s|__HOST__|${PUBLIC_HOST}|g" \
   -e "s|__SSL_FULLCHAIN__|${SSL_FULLCHAIN}|g" \
   -e "s|__SSL_KEY__|${SSL_KEY}|g" \
   -e "s|__PORT__|${PORT}|g" \
-  -e "s|__WEBHOOK_PATH__|/webhook|g" \
   -e "s|__DOWNLOADS_DIR__|${DOWNLOADS_DIR}|g" \
   "$INSTALL_DIR/nginx/tg-gallery.conf" > "$NGINX_CONF_FILE"
 
@@ -235,11 +261,14 @@ echo "${GREEN}╔═════════════════════
 echo "${GREEN}║   tg-gallery installed successfully!         ║${NC}"
 echo "${GREEN}╚══════════════════════════════════════════════╝${NC}"
 echo
-echo "  Bot URL       : https://${WEBHOOK_DOMAIN}"
+echo "  Public host   : https://${PUBLIC_HOST}"
 echo "  Install dir   : ${INSTALL_DIR}"
 echo "  Downloads     : ${DOWNLOADS_DIR}"
 echo "  Download URL  : ${DOWNLOAD_BASE_URL}"
 echo "  nginx conf    : ${NGINX_CONF_FILE}"
+echo
+echo "  The bot connects to Telegram via MTProto (no webhook),"
+echo "  so it can upload archives up to 2 GB straight to your chat."
 echo
 echo "  Useful:"
 echo "    pm2 logs tg-gallery        # live logs"

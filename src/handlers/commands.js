@@ -3,7 +3,7 @@
  * accepts gallery URLs and prompts for an archive name.
  */
 
-const { Markup } = require("telegraf");
+const { Markup } = require("../tg/markup");
 const sessions = require("../sessions");
 const archiveName = require("../archiveName");
 const strategyEngine = require("../scrapers/strategyEngine");

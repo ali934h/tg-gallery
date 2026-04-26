@@ -1,5 +1,6 @@
 /**
- * Retry helper for Telegram Bot API calls that may hit a 429.
+ * Retry helper for Telegram calls (both Bot-API style 429s and GramJS
+ * FloodWaitError) that benefit from honouring server-supplied wait hints.
  */
 
 const logger = require("../logger");
@@ -13,11 +14,18 @@ async function retryWithBackoff(fn, maxRetries = 5, baseDelay = 1000) {
       const isRateLimit =
         msg.includes("429") ||
         msg.includes("Too Many Requests") ||
-        msg.includes("retry after");
+        msg.includes("retry after") ||
+        msg.includes("FLOOD_WAIT") ||
+        typeof err?.seconds === "number";
       if (!isRateLimit || attempt === maxRetries) throw err;
       let delay = baseDelay * Math.pow(2, attempt);
-      const m = msg.match(/retry after (\d+)/);
-      if (m) delay = Math.max(delay, parseInt(m[1], 10) * 1000);
+      const after = msg.match(/retry after (\d+)/);
+      if (after) delay = Math.max(delay, parseInt(after[1], 10) * 1000);
+      const flood = msg.match(/FLOOD_WAIT_(\d+)/);
+      if (flood) delay = Math.max(delay, parseInt(flood[1], 10) * 1000);
+      if (typeof err?.seconds === "number") {
+        delay = Math.max(delay, err.seconds * 1000);
+      }
       logger.warn(
         `Rate limit hit, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`
       );

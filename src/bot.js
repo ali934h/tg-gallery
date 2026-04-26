@@ -1,8 +1,9 @@
 /**
- * Telegraf bot wiring: middleware, handler registration, lifecycle.
+ * Bot wiring: registers middleware + handlers on the GramJS-based BotAdapter,
+ * then attaches the adapter to a connected TelegramClient.
  */
 
-const { Telegraf } = require("telegraf");
+const { BotAdapter } = require("./tg/adapter");
 const config = require("./config");
 const logger = require("./logger");
 const sessions = require("./sessions");
@@ -16,12 +17,8 @@ function isAllowed(userId) {
   return config.allowedUsers.has(userId);
 }
 
-function build() {
-  const bot = new Telegraf(config.botToken, {
-    telegram: { apiRoot: "https://api.telegram.org", webhookReply: true },
-  });
-  // Long timeout for large media operations
-  bot.telegram.options = { ...bot.telegram.options, timeout: 300000 };
+function build(client) {
+  const bot = new BotAdapter(client);
 
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -29,7 +26,7 @@ function build() {
     if (!isAllowed(userId)) {
       logger.warn(`Unauthorized access attempt by user: ${userId}`);
       if (ctx.callbackQuery) {
-        await ctx.answerCbQuery("⛔ Access denied.").catch(() => {});
+        await ctx.answerCbQuery("⛔ Access denied.");
       } else {
         await ctx.reply("⛔ You are not authorized to use this bot.").catch(() => {});
       }
@@ -42,14 +39,18 @@ function build() {
   filesHandler.register(bot);
   job.register(bot);
 
-  bot.catch((err, ctx) => {
+  bot.catch(async (err, ctx) => {
     logger.error("Unhandled bot error", {
       error: err.message,
       user: ctx.from?.id,
     });
-    ctx
-      .reply("An unexpected error occurred. Please try again or send /start to reset.")
-      .catch(() => {});
+    try {
+      await ctx.reply(
+        "An unexpected error occurred. Please try again or send /start to reset."
+      );
+    } catch (_e) {
+      // ignore
+    }
     if (ctx.from?.id) sessions.reset(ctx.from.id);
   });
 
@@ -58,7 +59,7 @@ function build() {
 
 async function setBotCommands(bot) {
   try {
-    await bot.telegram.setMyCommands([
+    await bot.setMyCommands([
       { command: "start", description: "Start the bot" },
       { command: "help", description: "How to use this bot" },
       { command: "files", description: "View and manage downloaded files" },
@@ -74,29 +75,13 @@ async function initialize(bot) {
   await strategyEngine.load();
   await setBotCommands(bot);
   sessions.startCleanup();
+  bot.attach();
   if (config.allowedUsers.size > 0) {
     logger.info(`Whitelist active: ${[...config.allowedUsers].join(", ")}`);
   } else {
     logger.warn("No ALLOWED_USERS set — bot is open to ALL Telegram users");
   }
+  logger.info("Bot event handlers attached");
 }
 
-async function startWebhook(bot) {
-  await initialize(bot);
-  const url = `${config.webhookDomain}${config.webhookPath}`;
-  await bot.telegram.setWebhook(url, {
-    secret_token: config.webhookSecret,
-  });
-  logger.info(`Webhook set: ${url}`);
-  return bot;
-}
-
-async function startPolling(bot) {
-  await initialize(bot);
-  await bot.launch();
-  logger.info("Bot started with polling");
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
-}
-
-module.exports = { build, startWebhook, startPolling };
+module.exports = { build, initialize };

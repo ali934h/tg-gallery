@@ -9,3 +9,7 @@ logs/
 *.bak.*
 .tmp/
 package-lock.json
+
+# Persisted MTProto session — contains an auth key, never commit.
+telegram.session
+*.session

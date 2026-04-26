@@ -1,19 +1,19 @@
 /**
- * HTTP server: exposes a /health endpoint and (in production) the webhook
- * callback. Static download serving is handled by nginx, NOT by Express.
+ * Minimal Express server. The bot itself talks MTProto directly to Telegram
+ * (no webhook), so this server only exposes a /health endpoint that nginx
+ * uses for upstream health checks. Static ZIP downloads are served by nginx
+ * straight from disk and never hit Node.
  */
 
 const express = require("express");
-const http = require("http");
 const config = require("./config");
 const logger = require("./logger");
 
-function build(bot) {
+function build() {
   const app = express();
-  app.use(express.json());
 
-  app.get("/health", (req, res) => {
-    res.status(200).json({
+  app.get("/health", (_req, res) => {
+    res.json({
       status: "ok",
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
@@ -21,35 +21,27 @@ function build(bot) {
     });
   });
 
-  app.get("/", (_req, res) => {
-    res.status(200).json({
-      service: "tg-gallery",
-      status: "running",
-    });
+  app.use((_req, res) => {
+    res.status(404).json({ error: "Not Found" });
   });
 
-  if (config.isProduction) {
-    // Telegraf validates the X-Telegram-Bot-Api-Secret-Token header against
-    // the secretToken we pass here. Requests without a matching token are
-    // rejected with 403.
-    app.use(
-      bot.webhookCallback(config.webhookPath, {
-        secretToken: config.webhookSecret,
-      })
-    );
-  }
+  app.use((err, _req, res, _next) => {
+    logger.error("Express error", { error: err.message });
+    res.status(500).json({ error: "Internal Server Error" });
+  });
 
   return app;
 }
 
 function listen(app) {
-  const server = http.createServer(app);
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(config.port, "127.0.0.1", () => {
-      logger.info(`HTTP server listening on 127.0.0.1:${config.port}`);
-      resolve(server);
+    const srv = app.listen(config.serverPort, config.serverHost, () => {
+      logger.info(
+        `HTTP server listening on ${config.serverHost}:${config.serverPort}`
+      );
+      resolve(srv);
     });
+    srv.once("error", reject);
   });
 }
 

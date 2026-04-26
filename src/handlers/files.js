@@ -3,7 +3,7 @@
  *   list → details → delete + bulk delete.
  */
 
-const { Markup } = require("telegraf");
+const { Markup } = require("../tg/markup");
 const config = require("../config");
 const logger = require("../logger");
 const filesStore = require("../files");

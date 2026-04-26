@@ -2,6 +2,11 @@
  * Centralised configuration loader.
  * Reads environment variables, validates required ones, exposes a frozen
  * config object. Throws clear errors if required vars are missing.
+ *
+ * The bot talks to Telegram over MTProto with its bot token (via GramJS),
+ * which is why TG_API_ID / TG_API_HASH are required: they identify the
+ * client app, the bot token authenticates the bot account. There is no
+ * webhook — long-polling MTProto handles updates.
  */
 
 require("dotenv").config();
@@ -49,31 +54,40 @@ function require_(name) {
 const NODE_ENV = process.env.NODE_ENV || "development";
 const isProduction = NODE_ENV === "production";
 
+const apiId = num("TG_API_ID");
+if (!Number.isFinite(apiId) || apiId <= 0) {
+  throw new Error(
+    "TG_API_ID is required and must be a positive integer (get one at https://my.telegram.org/apps)"
+  );
+}
+
 const config = Object.freeze({
   nodeEnv: NODE_ENV,
   isProduction,
 
+  // Bot identity from BotFather. Used to authenticate against MTProto.
   botToken: require_("BOT_TOKEN"),
 
-  // In production we also need a public webhook domain.
-  webhookDomain: isProduction
-    ? require_("WEBHOOK_DOMAIN").replace(/\/$/, "")
-    : (process.env.WEBHOOK_DOMAIN || "").replace(/\/$/, ""),
-  webhookPath: process.env.WEBHOOK_PATH || "/webhook",
+  // Telegram client app credentials from https://my.telegram.org/apps.
+  // Required so GramJS can speak MTProto directly (and therefore upload
+  // up to 2 GB instead of the 50 MB Bot-API HTTP limit).
+  apiId,
+  apiHash: require_("TG_API_HASH"),
 
-  // Random secret that Telegram sends in the X-Telegram-Bot-Api-Secret-Token
-  // header on every webhook delivery. Required in production.
-  webhookSecret: isProduction
-    ? require_("WEBHOOK_SECRET")
-    : process.env.WEBHOOK_SECRET || "",
+  // Persisted MTProto session (StringSession). Created on first connect.
+  sessionFile:
+    process.env.TG_SESSION_FILE ||
+    path.join(process.cwd(), "telegram.session"),
 
-  port: num("PORT", 3000, { min: 1, max: 65535 }),
+  // Local HTTP server (only serves /health for nginx upstream checks).
+  serverPort: num("PORT", 3000, { min: 1, max: 65535 }),
+  serverHost: process.env.HOST || "127.0.0.1",
 
   downloadsDir:
     process.env.DOWNLOADS_DIR || path.join(process.cwd(), "downloads"),
   tempDir: process.env.TEMP_DIR || path.join(process.cwd(), "temp"),
 
-  // The URL prefix the bot returns to users. nginx serves the directory.
+  // Public URL prefix for ZIP downloads served straight from disk by nginx.
   downloadBaseUrl:
     (process.env.DOWNLOAD_BASE_URL || "http://localhost:3000/downloads").replace(
       /\/$/,
@@ -112,6 +126,14 @@ const config = Object.freeze({
     { min: 60_000 }
   ),
   tempMaxAgeMs: num("TEMP_MAX_AGE_MS", 60 * 60 * 1000, { min: 60_000 }),
+
+  // Cap on direct in-chat ZIP uploads. Telegram's hard limit for non-Premium
+  // accounts is 2 GB; bigger archives are still served via the direct link.
+  telegramMaxUploadBytes: num(
+    "TELEGRAM_MAX_UPLOAD_BYTES",
+    2 * 1024 * 1024 * 1024,
+    { min: 1024 * 1024 }
+  ),
 
   logLevel: process.env.LOG_LEVEL || "info",
 });
