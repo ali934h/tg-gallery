@@ -35,13 +35,13 @@ function build() {
 
 function listen(app) {
   return new Promise((resolve, reject) => {
-    const srv = app.listen(config.serverPort, config.serverHost, (err) => {
-      if (err) return reject(err);
+    const srv = app.listen(config.serverPort, config.serverHost, () => {
       logger.info(
         `HTTP server listening on ${config.serverHost}:${config.serverPort}`
       );
       resolve(srv);
     });
+    srv.once("error", reject);
   });
 }
 
